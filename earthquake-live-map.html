@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>全球地震实时地图</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --ink:#0b1016;
+    --surface:rgba(18,24,33,0.82);
+    --surface-solid:#121821;
+    --hairline:rgba(120,140,165,0.18);
+    --hairline-strong:rgba(120,140,165,0.32);
+    --text:#e8eef4;
+    --dim:#93a1b3;
+    --faint:#5d6b7c;
+    --accent:#2dd4c0;          /* 仪表青：仅用于“实时/激活/焦点” */
+    --accent-dim:rgba(45,212,192,0.16);
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; }
+  body{
+    background:var(--ink);
+    color:var(--text);
+    font-family:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  .mono{ font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric:tabular-nums; }
+
+  #map{ position:absolute; inset:0; z-index:1; background:var(--ink); }
+  .leaflet-container{ background:var(--ink); font-family:inherit; outline:none; }
+  .leaflet-control-attribution{
+    background:rgba(8,12,17,0.7)!important; color:var(--faint)!important;
+    font-size:10px!important; backdrop-filter:blur(4px);
+  }
+  .leaflet-control-attribution a{ color:var(--dim)!important; }
+  .leaflet-bar a{ background:var(--surface-solid); color:var(--text); border-color:var(--hairline); }
+  .leaflet-bar a:hover{ background:#1b2532; }
+
+  /* ---------- 悬浮面板通用 ---------- */
+  .panel{
+    position:absolute; z-index:1000;
+    background:var(--surface);
+    border:1px solid var(--hairline);
+    border-radius:14px;
+    backdrop-filter:blur(14px) saturate(1.2);
+    box-shadow:0 12px 40px rgba(0,0,0,0.45);
+  }
+  .eyebrow{
+    font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    color:var(--faint); font-weight:600;
+  }
+
+  /* ---------- HUD 左上 ---------- */
+  #hud{ top:16px; left:16px; padding:14px 18px; max-width:min(320px,calc(100vw - 32px)); }
+  #hud .title{ display:flex; align-items:center; gap:10px; font-size:17px; font-weight:700; letter-spacing:-0.01em; }
+  #live{
+    width:9px; height:9px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 0 0 var(--accent-dim); animation:livePulse 2.2s ease-out infinite; flex:none;
+  }
+  #live.paused{ background:var(--faint); animation:none; box-shadow:none; }
+  @keyframes livePulse{
+    0%{ box-shadow:0 0 0 0 rgba(45,212,192,0.5); }
+    70%{ box-shadow:0 0 0 9px rgba(45,212,192,0); }
+    100%{ box-shadow:0 0 0 0 rgba(45,212,192,0); }
+  }
+  #hud .stats{ display:flex; gap:18px; margin-top:12px; }
+  #hud .stat .k{ display:block; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--faint); margin-bottom:3px; }
+  #hud .stat .v{ display:block; font-size:20px; font-weight:500; line-height:1; }
+  #hud .updated{ margin-top:11px; font-size:11px; color:var(--dim); }
+  #hud .updated b{ color:var(--text); font-weight:500; }
+
+  /* ---------- 控制条 右上 ---------- */
+  #controls{ top:16px; right:16px; padding:13px 15px; width:248px; }
+  #controls .grp{ margin-bottom:13px; }
+  #controls .grp:last-child{ margin-bottom:0; }
+  .seg{ display:flex; gap:4px; margin-top:7px; background:rgba(0,0,0,0.25); padding:3px; border-radius:9px; }
+  .seg button{
+    flex:1; border:none; background:transparent; color:var(--dim);
+    font-family:inherit; font-size:12px; font-weight:500; padding:6px 0; border-radius:6px; cursor:pointer;
+    transition:background .15s,color .15s;
+  }
+  .seg button:hover{ color:var(--text); }
+  .seg button[aria-pressed="true"]{ background:var(--accent-dim); color:var(--accent); }
+  .seg button:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+  .slider-head{ display:flex; justify-content:space-between; align-items:baseline; margin-top:2px; }
+  .slider-head .val{ font-size:14px; font-weight:600; }
+  input[type=range]{
+    -webkit-appearance:none; appearance:none; width:100%; height:4px; margin-top:11px;
+    background:linear-gradient(90deg,#d4b15e,#f4c430,#f6921e,#f15a24,#e0322f,#c026d3);
+    border-radius:3px; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; appearance:none; width:16px; height:16px; border-radius:50%;
+    background:#fff; border:3px solid var(--ink); box-shadow:0 0 0 1px var(--hairline-strong),0 2px 6px rgba(0,0,0,.5); cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb{
+    width:16px; height:16px; border-radius:50%; background:#fff; border:3px solid var(--ink);
+    box-shadow:0 0 0 1px var(--hairline-strong); cursor:pointer;
+  }
+  input[type=range]:focus-visible{ outline:2px solid var(--accent); outline-offset:4px; }
+
+  .ctl-row{ display:flex; gap:8px; }
+  .btn{
+    flex:1; border:1px solid var(--hairline); background:rgba(0,0,0,0.2); color:var(--text);
+    font-family:inherit; font-size:12px; font-weight:500; padding:8px; border-radius:8px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; gap:6px; transition:background .15s,border-color .15s;
+  }
+  .btn:hover{ background:#1b2532; border-color:var(--hairline-strong); }
+  .btn:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+  .btn.active{ color:var(--accent); border-color:rgba(45,212,192,0.4); background:var(--accent-dim); }
+  .btn svg{ width:13px; height:13px; }
+  #refreshBtn.spin svg{ animation:spin .8s linear infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+
+  /* ---------- 图例 左下 ---------- */
+  #legend{ bottom:16px; left:16px; padding:11px 14px; }
+  #legend .eyebrow{ margin-bottom:8px; }
+  .scale{ display:flex; align-items:flex-end; gap:0; }
+  .scale .seg-c{ display:flex; flex-direction:column; align-items:center; gap:5px; }
+  .scale .sw{ width:34px; height:7px; }
+  .scale .seg-c:first-child .sw{ border-radius:3px 0 0 3px; }
+  .scale .seg-c:last-child .sw{ border-radius:0 3px 3px 0; }
+  .scale .lbl{ font-size:10px; color:var(--dim); }
+
+  /* ---------- 列表 右下 ---------- */
+  #list{ bottom:16px; right:16px; width:300px; max-height:min(46vh,440px); display:flex; flex-direction:column; overflow:hidden; }
+  #list .lhead{
+    display:flex; align-items:center; justify-content:space-between; padding:11px 14px;
+    cursor:pointer; user-select:none; border-bottom:1px solid var(--hairline);
+  }
+  #list.collapsed .lhead{ border-bottom:none; }
+  #list .lhead .eyebrow{ color:var(--dim); }
+  #list .chevron{ transition:transform .2s; color:var(--faint); }
+  #list.collapsed .chevron{ transform:rotate(180deg); }
+  #rows{ overflow-y:auto; overscroll-behavior:contain; }
+  #list.collapsed #rows{ display:none; }
+  .row{
+    display:flex; align-items:center; gap:11px; width:100%; text-align:left;
+    background:none; border:none; border-bottom:1px solid var(--hairline);
+    padding:9px 14px; cursor:pointer; color:inherit; font-family:inherit; transition:background .12s;
+  }
+  .row:last-child{ border-bottom:none; }
+  .row:hover{ background:rgba(255,255,255,0.04); }
+  .row:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+  .badge{
+    flex:none; width:38px; height:30px; border-radius:7px; display:flex; align-items:center; justify-content:center;
+    font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:14px; color:#0b1016;
+  }
+  .row-main{ min-width:0; flex:1; }
+  .row-place{ display:block; font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row-sub{ display:block; font-size:11px; color:var(--dim); margin-top:2px; }
+  #rows::-webkit-scrollbar{ width:8px; }
+  #rows::-webkit-scrollbar-thumb{ background:var(--hairline-strong); border-radius:4px; }
+
+  /* ---------- 震中标记 + 地震波 ---------- */
+  .leaflet-div-icon.qm{ background:transparent; border:none; }
+  .qmarker{ position:relative; }
+  .qmarker .dot{
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    border-radius:50%; background:var(--c); box-shadow:0 0 8px var(--c),0 0 2px rgba(0,0,0,0.6);
+  }
+  .qmarker .ring{
+    position:absolute; left:50%; top:50%; width:var(--r); height:var(--r);
+    margin:calc(var(--r) / -2) 0 0 calc(var(--r) / -2);
+    border-radius:50%; border:1.5px solid var(--c); opacity:0;
+    animation:ripple var(--dur,2.6s) cubic-bezier(0,0.2,0.4,1) infinite;
+  }
+  .qmarker .ring.r2{ animation-delay:calc(var(--dur,2.6s) / 2); }
+  .qmarker.hot .ring{ border-width:2px; }
+  .qmarker.hot .ring.r3{ animation-delay:calc(var(--dur,2.6s) / 1.4); }
+  @keyframes ripple{
+    0%{ transform:scale(0.18); opacity:0.85; }
+    100%{ transform:scale(1); opacity:0; }
+  }
+
+  /* ---------- 弹窗 ---------- */
+  .leaflet-popup-content-wrapper{ background:var(--surface-solid); color:var(--text); border:1px solid var(--hairline-strong); border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,0.5); }
+  .leaflet-popup-tip{ background:var(--surface-solid); border:1px solid var(--hairline-strong); }
+  .leaflet-popup-content{ margin:13px 15px; line-height:1.5; }
+  .leaflet-popup-close-button{ color:var(--faint)!important; padding:6px 7px 0 0!important; }
+  .pop-mag{ font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:600; line-height:1; }
+  .pop-mag span{ font-size:11px; color:var(--dim); margin-left:5px; font-weight:400; }
+  .pop-place{ font-size:13px; font-weight:500; margin:7px 0 9px; max-width:230px; }
+  .pop-meta{ display:flex; gap:14px; font-size:11px; color:var(--dim); margin-top:3px; }
+  .pop-meta .tsu{ color:#f15a24; font-weight:600; }
+  .leaflet-popup-content a{ display:inline-block; margin-top:10px; font-size:12px; color:var(--accent); text-decoration:none; font-weight:500; }
+  .leaflet-popup-content a:hover{ text-decoration:underline; }
+
+  /* ---------- 提示 ---------- */
+  #toast{
+    position:absolute; bottom:18px; left:50%; transform:translateX(-50%) translateY(20px);
+    z-index:1200; background:#2a1416; border:1px solid rgba(224,50,47,0.4); color:#ffd9d6;
+    padding:10px 16px; border-radius:10px; font-size:13px; opacity:0; pointer-events:none;
+    transition:opacity .3s,transform .3s; backdrop-filter:blur(8px);
+  }
+  #toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+
+  /* ---------- 响应式 ---------- */
+  @media (max-width:760px){
+    #hud{ max-width:calc(100vw - 32px); }
+    #controls{ width:calc(100vw - 32px); right:16px; top:auto; bottom:16px; }
+    #legend{ display:none; }
+    #list{ display:none; }
+  }
+  @media (prefers-reduced-motion:reduce){
+    #live{ animation:none; }
+    .qmarker .ring{ display:none; }
+    #refreshBtn.spin svg{ animation:none; }
+  }
+</style>
+</head>
+<body>
+  <div id="map" role="application" aria-label="全球地震实时地图"></div>
+
+  <div id="hud" class="panel">
+    <div class="title"><span id="live" title="实时更新中"></span>全球地震实时</div>
+    <div class="stats">
+      <div class="stat"><span class="k">显示</span><span class="v mono" id="stCount">—</span></div>
+      <div class="stat"><span class="k">最大震级</span><span class="v mono" id="stMax">—</span></div>
+    </div>
+    <div class="updated">已更新 <b class="mono" id="stTime">—</b></div>
+  </div>
+
+  <div id="controls" class="panel">
+    <div class="grp">
+      <span class="eyebrow">时间范围</span>
+      <div class="seg" id="winSeg" role="group" aria-label="时间范围">
+        <button data-win="hour" aria-pressed="false">1 小时</button>
+        <button data-win="day" aria-pressed="true">24 小时</button>
+        <button data-win="week" aria-pressed="false">7 天</button>
+      </div>
+    </div>
+    <div class="grp">
+      <div class="slider-head">
+        <span class="eyebrow">最小震级</span>
+        <span class="val mono">M <span id="magVal">2.5</span>+</span>
+      </div>
+      <input type="range" id="magSlider" min="0" max="7" step="0.5" value="2.5" aria-label="最小震级" />
+    </div>
+    <div class="grp">
+      <div class="ctl-row">
+        <button class="btn active" id="autoBtn" aria-pressed="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          自动刷新
+        </button>
+        <button class="btn" id="refreshBtn" title="立即刷新">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/></svg>
+          刷新
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="legend" class="panel">
+    <div class="eyebrow">震级 · 地震波颜色</div>
+    <div class="scale" id="scale"></div>
+  </div>
+
+  <aside id="list" class="panel">
+    <div class="lhead" id="listHead" role="button" tabindex="0" aria-expanded="true">
+      <span class="eyebrow">最近地震</span>
+      <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 15l6-6 6 6"/></svg>
+    </div>
+    <div id="rows"></div>
+  </aside>
+
+  <div id="toast"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+  (function(){
+    "use strict";
+
+    var FEED_BASE = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/";
+    // 每个时间范围对应一个 USGS 预置数据源 + 滑块下限 + 默认最小震级
+    var WINDOWS = {
+      hour: { feed:"all_hour",  floor:0,   def:0   },
+      day:  { feed:"all_day",   floor:0,   def:2.5 },
+      week: { feed:"4.5_week",  floor:4.5, def:4.5 }
+    };
+    var REFRESH_MS = 60000;
+    var MAX_MARKERS = 600;   // 渲染上限，保护性能
+    var MAX_RIPPLES = 60;    // 同时扩散“地震波”的数量上限
+
+    var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    var state = {
+      win: "day",
+      minMag: 2.5,
+      raw: [],            // 当前数据源拉到的全部事件
+      seen: null,         // 已见过的事件 id（用于高亮新事件）
+      auto: true,
+      timer: null
+    };
+
+    var rtf = new Intl.RelativeTimeFormat("zh-CN", { numeric:"auto" });
+    function relTime(ms){
+      var d = (ms - Date.now()) / 1000;
+      var abs = Math.abs(d);
+      if (abs < 60)   return rtf.format(Math.round(d), "second");
+      if (abs < 3600) return rtf.format(Math.round(d/60), "minute");
+      if (abs < 86400)return rtf.format(Math.round(d/3600), "hour");
+      return rtf.format(Math.round(d/86400), "day");
+    }
+    function clockTime(ms){
+      return new Date(ms).toLocaleString("zh-CN", { hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false });
+    }
+    function esc(s){
+      return String(s == null ? "" : s).replace(/[&<>"']/g, function(c){
+        return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c];
+      });
+    }
+
+    function magColor(m){
+      if (m >= 7)   return "#c026d3";
+      if (m >= 6)   return "#e0322f";
+      if (m >= 5)   return "#f15a24";
+      if (m >= 4)   return "#f6921e";
+      if (m >= 2.5) return "#f4c430";
+      return "#d4b15e";
+    }
+    function dotSize(m){ return Math.max(6, Math.min(26, 6 + m * 2.4)); }
+    function ringSize(m){ return Math.max(36, 28 + m * 15); }
+
+    // ---------- 地图 ----------
+    var map = L.map("map", {
+      worldCopyJump:true, zoomControl:true, attributionControl:true,
+      minZoom:2, maxZoom:9, zoomSnap:0.5
+    }).setView([18, 8], 2.5);
+
+    L.control.zoom({ position:"bottomright" });
+    map.zoomControl.setPosition("bottomright");
+
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      subdomains:"abcd", maxZoom:19,
+      attribution:'地震数据 © USGS · 地图 © OpenStreetMap、© CARTO'
+    }).addTo(map);
+
+    var quakeLayer = L.layerGroup().addTo(map);
+    var markersById = {};
+
+    // ---------- 数据 ----------
+    function feedUrl(){
+      return FEED_BASE + WINDOWS[state.win].feed + ".geojson";
+    }
+
+    var retrySec = 15;
+    function fetchData(manual){
+      var btn = document.getElementById("refreshBtn");
+      if (manual) btn.classList.add("spin");
+
+      fetch(feedUrl(), { cache:"no-store" })
+        .then(function(r){ if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(function(geo){
+          retrySec = 15;
+          state.raw = (geo.features || []).filter(function(f){
+            return f && f.geometry && f.geometry.coordinates && f.properties && typeof f.properties.mag === "number";
+          });
+          render();
+          markUpdated();
+        })
+        .catch(function(){
+          showToast("无法连接 USGS，" + retrySec + " 秒后重试");
+          setTimeout(function(){ fetchData(false); }, retrySec * 1000);
+          retrySec = Math.min(60, retrySec * 2);
+        })
+        .then(function(){ if (manual) setTimeout(function(){ btn.classList.remove("spin"); }, 600); });
+    }
+
+    function render(){
+      quakeLayer.clearLayers();
+      markersById = {};
+
+      var list = state.raw
+        .filter(function(f){ return f.properties.mag >= state.minMag; })
+        .sort(function(a, b){ return b.properties.time - a.properties.time; })
+        .slice(0, MAX_MARKERS);
+
+      // 新事件识别（首次加载只记录、不高亮）
+      var firstLoad = state.seen === null;
+      var nowSeen = {};
+      var rippleBudget = MAX_RIPPLES;
+      var maxMag = 0;
+
+      list.forEach(function(f, i){
+        var p = f.properties;
+        var c = f.geometry.coordinates;       // [lon, lat, depth]
+        var latlng = [c[1], c[0]];
+        var depth = c[2];
+        var mag = p.mag;
+        var id = f.id;
+        var color = magColor(mag);
+        if (mag > maxMag) maxMag = mag;
+        nowSeen[id] = true;
+
+        var isNew = !firstLoad && state.seen && !state.seen[id];
+        var recent = (Date.now() - p.time) < 90 * 60 * 1000;
+        var ripple = !reduceMotion && rippleBudget > 0 && (mag >= 3.5 || recent || isNew);
+        if (ripple) rippleBudget--;
+        var hot = ripple && (i === 0 || isNew);
+
+        var d = dotSize(mag), r = ringSize(mag);
+        var dur = (2.9 - Math.min(1.2, mag * 0.12)).toFixed(2);  // 大震波动更快
+        var rings = "";
+        if (ripple){
+          rings = '<span class="ring"></span><span class="ring r2"></span>' + (hot ? '<span class="ring r3"></span>' : "");
+        }
+        var html =
+          '<div class="qmarker' + (hot ? ' hot' : '') + '" style="--c:' + color + ';--r:' + r + 'px;--dur:' + dur + 's">' +
+            '<span class="dot" style="width:' + d + 'px;height:' + d + 'px"></span>' + rings +
+          '</div>';
+        var size = Math.max(r, d);
+        var icon = L.divIcon({ className:"qm", html:html, iconSize:[size, size], iconAnchor:[size/2, size/2] });
+
+        var marker = L.marker(latlng, { icon:icon, riseOnHover:true, keyboard:false, zIndexOffset: Math.round(mag * 100) });
+        marker.bindPopup(popupHtml(mag, p, depth), { closeButton:true, maxWidth:280, autoPanPadding:[40,40] });
+        marker.addTo(quakeLayer);
+        markersById[id] = marker;
+      });
+
+      state.seen = nowSeen;
+
+      // 统计
+      document.getElementById("stCount").textContent = list.length;
+      document.getElementById("stMax").textContent = list.length ? ("M " + maxMag.toFixed(1)) : "—";
+
+      renderList(list);
+    }
+
+    function popupHtml(mag, p, depth){
+      return '<div class="pop">' +
+        '<div class="pop-mag" style="color:' + magColor(mag) + '">M ' + mag.toFixed(1) +
+          '<span>' + esc(p.magType || "") + '</span></div>' +
+        '<div class="pop-place">' + esc(p.place || "位置未知") + '</div>' +
+        '<div class="pop-meta"><span class="mono">' + clockTime(p.time) + '</span><span>' + relTime(p.time) + '</span></div>' +
+        '<div class="pop-meta"><span class="mono">深度 ' + (depth != null ? depth.toFixed(0) : "?") + ' km</span>' +
+          (p.tsunami ? '<span class="tsu">⚠ 海啸关注</span>' : "") + '</div>' +
+        '<a href="' + esc(p.url || "#") + '" target="_blank" rel="noopener">USGS 事件详情 ↗</a>' +
+      '</div>';
+    }
+
+    function renderList(list){
+      var rows = document.getElementById("rows");
+      if (!list.length){
+        rows.innerHTML = '<div style="padding:18px 14px;color:var(--faint);font-size:13px">该范围内暂无符合条件的地震。</div>';
+        return;
+      }
+      var html = "";
+      list.slice(0, 60).forEach(function(f){
+        var p = f.properties, mag = p.mag, c = f.geometry.coordinates;
+        html +=
+          '<button class="row" data-id="' + esc(f.id) + '">' +
+            '<span class="badge" style="background:' + magColor(mag) + '">' + mag.toFixed(1) + '</span>' +
+            '<span class="row-main">' +
+              '<span class="row-place">' + esc(p.place || "位置未知") + '</span>' +
+              '<span class="row-sub">' + relTime(p.time) + ' · 深度 ' + (c[2] != null ? c[2].toFixed(0) : "?") + ' km</span>' +
+            '</span>' +
+          '</button>';
+      });
+      rows.innerHTML = html;
+    }
+
+    document.getElementById("rows").addEventListener("click", function(e){
+      var btn = e.target.closest(".row");
+      if (!btn) return;
+      var m = markersById[btn.getAttribute("data-id")];
+      if (m){
+        map.flyTo(m.getLatLng(), Math.max(map.getZoom(), 5), { duration:0.8 });
+        setTimeout(function(){ m.openPopup(); }, 820);
+      }
+    });
+
+    function markUpdated(){
+      document.getElementById("stTime").textContent = clockTime(Date.now());
+    }
+
+    var toastTimer;
+    function showToast(msg){
+      var t = document.getElementById("toast");
+      t.textContent = msg;
+      t.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function(){ t.classList.remove("show"); }, 4000);
+    }
+
+    // ---------- 自动刷新 ----------
+    function startAuto(){
+      stopAuto();
+      if (state.auto) state.timer = setInterval(function(){ fetchData(false); }, REFRESH_MS);
+    }
+    function stopAuto(){ if (state.timer){ clearInterval(state.timer); state.timer = null; } }
+
+    // ---------- 控件 ----------
+    document.getElementById("winSeg").addEventListener("click", function(e){
+      var b = e.target.closest("button"); if (!b) return;
+      var win = b.getAttribute("data-win");
+      if (win === state.win) return;
+      state.win = win;
+      Array.prototype.forEach.call(this.querySelectorAll("button"), function(x){
+        x.setAttribute("aria-pressed", x === b ? "true" : "false");
+      });
+      // 切换范围时重置滑块下限与默认值
+      var w = WINDOWS[win];
+      var slider = document.getElementById("magSlider");
+      slider.min = w.floor;
+      slider.value = Math.max(w.floor, w.def);
+      state.minMag = parseFloat(slider.value);
+      document.getElementById("magVal").textContent = state.minMag.toFixed(1);
+      state.seen = null;   // 数据源变了，避免误报“新事件”
+      fetchData(true);
+    });
+
+    var slider = document.getElementById("magSlider");
+    slider.addEventListener("input", function(){
+      state.minMag = parseFloat(this.value);
+      document.getElementById("magVal").textContent = state.minMag.toFixed(1);
+      render();   // 仅本地过滤，无需重新请求
+    });
+
+    document.getElementById("autoBtn").addEventListener("click", function(){
+      state.auto = !state.auto;
+      this.classList.toggle("active", state.auto);
+      this.setAttribute("aria-pressed", state.auto ? "true" : "false");
+      document.getElementById("live").classList.toggle("paused", !state.auto);
+      document.getElementById("live").title = state.auto ? "实时更新中" : "已暂停";
+      startAuto();
+    });
+
+    document.getElementById("refreshBtn").addEventListener("click", function(){ fetchData(true); });
+
+    function toggleList(){
+      var l = document.getElementById("list");
+      var collapsed = l.classList.toggle("collapsed");
+      document.getElementById("listHead").setAttribute("aria-expanded", collapsed ? "false" : "true");
+    }
+    document.getElementById("listHead").addEventListener("click", toggleList);
+    document.getElementById("listHead").addEventListener("keydown", function(e){
+      if (e.key === "Enter" || e.key === " "){ e.preventDefault(); toggleList(); }
+    });
+
+    // ---------- 图例 ----------
+    (function buildLegend(){
+      var segs = [
+        { c:"#d4b15e", l:"<2.5" }, { c:"#f4c430", l:"2.5" }, { c:"#f6921e", l:"4" },
+        { c:"#f15a24", l:"5" }, { c:"#e0322f", l:"6" }, { c:"#c026d3", l:"7+" }
+      ];
+      document.getElementById("scale").innerHTML = segs.map(function(s){
+        return '<div class="seg-c"><span class="sw" style="background:' + s.c + '"></span><span class="lbl">' + s.l + '</span></div>';
+      }).join("");
+    })();
+
+    // 每 30 秒刷新一次相对时间文案（不重新请求）
+    setInterval(function(){ if (state.raw.length) renderList(
+      state.raw.filter(function(f){ return f.properties.mag >= state.minMag; })
+               .sort(function(a,b){ return b.properties.time - a.properties.time; })
+               .slice(0, MAX_MARKERS)
+    ); }, 30000);
+
+    // ---------- 启动 ----------
+    fetchData(true);
+    startAuto();
+  })();
+  </script>
+</body>
+</html>
